@@ -27,6 +27,11 @@ class DataTools:
         self.n0u = None 
         self.time = None 
         self.methodology = None
+        self.sol_flag = "n"
+        self.M_ws = None        # solvent molecular weight
+        self.n_s0 = None        # initial solvent moles
+        self.rho_s = None       # optional solvent density
+
         
     # wanted to use something like default dict but in a callable way
     # instead of subscriptable, hence this hack
@@ -124,6 +129,16 @@ class DataTools:
         Raises:
             ValueError: If the volume data has an incorrect format.
         """
+        
+        
+
+        if self.reactor_mode== "semi-batch":
+            if isinstance(V, (int, float)):
+                raise ValueError(
+            "Semi-batch reactor requires time-dependent volume data. "
+            "Constant volume is physically invalid.")
+
+        
         if isinstance(V, (int, float)):
             self.v_value = V
             self.V = self.default_dict_v
@@ -181,9 +196,17 @@ class DataTools:
             Winhat: A list-like or numpy array representing the Winhat data.
 
         """
+
+        if hasattr(self, "reactor_mode") and self.reactor_mode == "batch":
+            warnings.warn(
+                "Winhat provided for batch reactor. Overriding with zeros.",
+            stacklevel=2,)
+            Winhat = np.zeros(self.S)
         if isinstance(Winhat, list):
             Winhat = np.array(Winhat)
         self.Winhat = Winhat
+        
+
 
         if len(Winhat.shape) == 1:
             self.P = 1
@@ -203,6 +226,11 @@ class DataTools:
         Raises:
             ValueError: If the uin data has an unsupported file format.
         """
+
+        if hasattr(self, "reactor_mode") and self.reactor_mode == "batch":
+            if uin not in (None, 0):
+                raise ValueError("uin must be zero for a batch reactor.")
+
         if isinstance(uin, (float, int)):
             uin = np.array([uin])
             self.uin_value = uin
@@ -259,6 +287,13 @@ class DataTools:
         Raises:
             ValueError: If the uout data has an unsupported file format.
         """
+        if hasattr(self, "reactor_mode"):
+            if self.reactor_mode in ("batch", "semi-batch"):
+                if uout not in (None, 0):
+                    raise ValueError(f"uout must be zero for a {self.reactor_mode} reactor.")
+
+        
+        
         if isinstance(uout, (float, int)):
             self.uout_value = np.array([uout])
             self.uout = self.default_dict_uout
@@ -303,77 +338,87 @@ class DataTools:
         self.n0 = n0
 
     def add_reactor_config(self, V, Winhat, uin, uout, config):
-        """Adds reactor configuration data to the class instance.
+        """
+        Adds reactor configuration data to the class instance.
 
         Args:
-            V: The volume of the reactor.
-            Winhat: The Winhat data.
-            uin: The uin data.
-            uout: The uout data.
-            config (str): The configuration type of the reactor. Supported values:
-                "batch", "semi-batch", "cstr".
-
-        Returns:
-            tuple: A tuple containing the updated values for V, Winhat, uin, and uout.
-
-        Raises:
-            ValueError: If the configuration is invalid or if required arguments
-                are not provided for a specific configuration.
+        V: Reactor volume data (scalar, callable, dataframe, etc.).
+        Winhat: Inlet composition (mass fractions).
+        uin: Inlet flow rate(s).
+        uout: Outlet flow rate.
+        config (str): Reactor configuration type.
+            Supported values: "batch", "semi-batch", "cstr".
         """
-        if config is None and ((Winhat is None) or (uin is None) or (uout is None)):
-            raise ValueError(
-                "If config is not specified, other arguments should be provided"
-            )
 
+   
+        if config is None:
+            raise ValueError("Reactor configuration must be specified.")
+
+        config = config.lower()
+
+        if config not in ("batch", "semi-batch", "cstr"):
+            raise ValueError(
+            "Invalid reactor configuration. "
+            "Supported values: 'batch', 'semi-batch', 'cstr'.")
+
+    
         if config == "batch":
+
             if Winhat is not None:
                 warnings.warn(
-                    f"Winhat is provided for config = {config}. Using Winhat = {[0]*self.S}",
-                    stacklevel=2,
-                )
-            if uin is not None:
-                if uin == 0:
-                    pass
-                else:
-                    raise ValueError(
-                        f"uin should not be specified for config = {config}. \
-                            Non-zero uin provided."
-                    )
-            if uout is not None:
-                if uout == 0:
-                    pass
-                else:
-                    raise ValueError(
-                        f"uout should not be specified for config = {config}. \
-                            Non-zero uout provided."
-                    )
+                f"Winhat provided for batch reactor. "
+                f"Overriding with zeros.",
+                stacklevel=2,
+            )
 
-            Winhat = [0] * self.S
+            if uin not in (None, 0):
+                raise ValueError(
+                "uin must be zero or None for a batch reactor."
+            )
+
+            if uout not in (None, 0):
+                raise ValueError(
+                "uout must be zero or None for a batch reactor."
+            )
+
+            Winhat = np.zeros(self.S)
             uin = 0
             uout = 0
 
         elif config == "semi-batch":
+
             if Winhat is None:
-                raise ValueError(f"Winhat cannot be none/empty for config = {config}")
+                raise ValueError("Winhat must be provided for a semi-batch reactor.")
+
             if uin is None:
-                raise ValueError(f"uin cannot be none/empty for config = {config}")
-            if uout is not None:
-                if uout == 0:
-                    pass
-                else:
-                    raise ValueError(
-                        f"uout should not be specified for config = {config}. \
-                            Non-zero uout value provided."
-                    )
+                raise ValueError("uin must be provided for a semi-batch reactor.")
+
+            if uout not in (None, 0):
+                raise ValueError(
+                "uout must be zero or None for a semi-batch reactor.")
+
             uout = 0
+            self.add_Winhat_data(Winhat)
 
         elif config == "cstr":
-            pass
 
-        else:
-            pass
+            if Winhat is None:
+                raise ValueError("Winhat must be provided for a CSTR.")
 
-        return V, Winhat, uin, uout
+            if uin is None:
+                raise ValueError("uin must be provided for a CSTR.")
+
+            if uout is None:
+                raise ValueError("uout must be provided for a CSTR.")
+            self.add_Winhat_data(Winhat)
+
+ 
+        self.reactor_mode = config
+        # self.V = V
+        # self.Winhat = Winhat
+        self.uin = uin
+        self.uout = uout
+
 
     def add_concentration_data(
         self,
@@ -459,16 +504,28 @@ class DataTools:
                 )
 
             n0_ = np.reshape(self.n0, (self.n0.shape[0], 1))
-            mat = np.concatenate([self.N.T, self.Win, n0_], axis=1)
 
-            if (np.linalg.matrix_rank(mat) == self.R + self.P + 1) and (
-                self.methodology is None
-            ):
-                self.methodology = 1  # Here, it can be both rate based or extent based
+            if self.reactor_mode == "batch":
+                mat = np.concatenate([self.N.T, n0_], axis=1)
+                if np.linalg.matrix_rank(mat) != self.R + 1:
+                    raise ValueError(
+            "Rank condition failed for batch reactor: "
+            "rank([N.T, n0]) must equal R + 1.")
+                self.methodology = 1
+
             else:
-                raise ValueError(
-                    "Rank of [N.T, Win, n0_] != R + p + 1. Problem is not identifiable."
-                )
+                # semi-batch or CSTR
+                Win = self.Win
+                if Win.ndim == 1:
+                    Win = Win.reshape(-1, 1)
+
+                mat = np.concatenate([self.N.T, Win, n0_], axis=1)
+                if np.linalg.matrix_rank(mat) != self.R + self.P + 1:
+                    raise ValueError(
+            "Rank of [N.T, Win, n0] != R + P + 1. Problem is not identifiable."
+        )
+                self.methodology = 1
+
 
         else:
             self.unavailable_idx = unavailable_idx
@@ -512,8 +569,7 @@ class DataTools:
         elif preprocess == "savgol_filter":
             if window_length is None:
                 window_length = int(
-                    time.shape[0] / 5
-                )  # default value for window length is timesteps/5
+                    time.shape[0] / 5)  # default value for window length is timesteps/5
 
             conc = savgol_filter(
                 conc, window_length, polyorder, deriv, delta, axis, mode, cval
@@ -546,3 +602,71 @@ class DataTools:
             self.n = sc.interpolate.interp1d(time, n, kind)  # this is a function
             # self.c = ((self.n(time)).T / self.V(time)).T # smoothed conc values, this is np array
             self.c = sc.interpolate.interp1d(time, conc, kind)  # this is a function
+
+
+
+    
+    def add_solvent_data(self, sol_flag, M_ws=None, n_s0=None, rho_s=None):
+        """
+        Adds solvent information to the DataTools instance.
+
+        Parameters
+        ----------
+        sol_flag : str
+            'y' if solvent is present, 'n' otherwise.
+        M_ws : float, optional
+            Molecular weight of solvent (required if sol_flag='y').
+        n_s0 : float, optional
+            Initial solvent moles (required if sol_flag='y').
+        rho_s : float, optional
+            Solvent density (kg/m^3 or consistent units).
+        """
+
+        if sol_flag not in ("y", "n"):
+            raise ValueError("sol_flag must be 'y' or 'n'.")
+
+        self.sol_flag = sol_flag
+
+        if sol_flag == "n":
+            self.M_ws = None
+            self.n_s0 = None
+            self.rho_s = None
+            return
+
+        
+        if M_ws is None or M_ws <= 0:
+            raise ValueError("Positive solvent molecular weight must be provided.")
+
+        if n_s0 is None or n_s0 <= 0:
+            raise ValueError("Positive initial solvent moles must be provided.")
+
+        if rho_s is not None and rho_s <= 0:
+            raise ValueError("Solvent density must be positive.")
+
+        self.M_ws = float(M_ws)
+        self.n_s0 = float(n_s0)
+        self.rho_s = float(rho_s) if rho_s is not None else None
+
+
+    def mixture_density(self, n_species, n_solvent):
+        """
+        Computes mixture density assuming ideal mixing.
+        Mw is assumed to be a diagonal matrix.
+        """
+        if self.rho_s is None:
+            raise ValueError("Solvent density not provided.")
+        
+        if hasattr(self, "available_idx"):
+            Mw_diag = np.diag(self.Mw)[self.available_idx]
+        else:
+            Mw_diag = np.diag(self.Mw)
+
+        m_species = np.sum(n_species * Mw_diag)
+        m_solvent = n_solvent * self.M_ws
+
+        total_mass = m_species + m_solvent
+        V = self.V(self.time)
+
+        return total_mass / V
+
+

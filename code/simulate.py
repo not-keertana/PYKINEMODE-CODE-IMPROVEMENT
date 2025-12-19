@@ -27,33 +27,34 @@ class Simulate(DataTools):
             ValueError: If n0 is None.
 
         """
+        super().__init__() 
         if n0 is None:
             raise ValueError("n0 cannot be None")
 
         self.add_stoichiometry_data(N)
 
         self.add_molweight_data(Mw)
-        if self.Mw.shape[0] != self.S:
-            raise ValueError(
-                f"Dimension of Mw {self.Mw.shape} should be {self.S}x{self.S} and \
-                    is not consistent with Stoichiometric Matrix N {self.N.shape}"
-            )
+        self.add_reactor_config(V, Winhat, uin, uout, config)
+        self.add_volume_data(V)
 
-        V, Winhat, uin, uout = self.add_reactor_config(V, Winhat, uin, uout, config)
-        self.add_volume_data(V, kind="linear")
 
         self.add_Winhat_data(Winhat)
-        if self.Winhat.shape[0] != self.S:
-            raise ValueError(
-                f"Dimension of Winhat {self.Winhat.shape} should be {self.S}x{self.P} \
-                    and is not consistent with Stoichiometric Matrix N {self.N.shape}"
-            )
+        if self.reactor_mode != "batch":
+            if self.Winhat.shape[0] != self.S:
+                raise ValueError(
+            f"Dimension of Winhat {self.Winhat.shape} should be "
+            f"{self.S}x{self.P} and is not consistent with "
+            f"Stoichiometric Matrix N {self.N.shape}"
+        )
 
-        self.add_uin_data(uin, kind="linear")
-        if self.uin(0).shape[0] != self.P:
-            raise ValueError(
-                f"Dimension of uin {self.uin.shape} is not consistent with Winhat {self.Win.shape}"
-            )
+
+        if self.reactor_mode != "batch":
+            self.add_uin_data(uin, kind="linear")
+            if self.uin(0).shape[0] != self.P:
+                raise ValueError(...)
+            else:
+                self.uin = lambda t: np.zeros(self.P)
+
 
         self.add_uout_data(uout, kind="linear")
         self.add_n0_data(n0)
@@ -62,9 +63,10 @@ class Simulate(DataTools):
                 f"Required {self.S} species for n0. Received {self.n0.shape[0]} species instead"
             )
 
-        self.Win = np.linalg.pinv(self.Mw) @ self.Winhat  # (SxP) matrix
-        if len(self.Win.shape) == 1:
-            self.Win = np.reshape(self.Win, (self.Win.shape[0], 1))
+        self.Win = np.linalg.pinv(self.Mw) @ self.Winhat
+        if self.Win.ndim == 1:
+            self.Win = self.Win.reshape(-1, 1)
+
         self.m0 = np.sum(self.Mw @ self.n0)
 
     def add_ratelaws(self, ratelaws, K):
@@ -84,26 +86,22 @@ class Simulate(DataTools):
         ]
 
     def mole_balance(self, y, t):
-        """
-        Computes the mole balance equations.
-
-        Args:
-            y (array-like): The concentration vector.
-            t (float): The current time.
-
-        Returns:
-            array-like: The derivative of the concentration vector.
-
-        """
         c = y / self.V(t)
         rate = np.array([ratelaw(c) for ratelaw in self.ratelaws])
-        m = np.sum(self.Mw @ y)  # current mass
-        dydt = (
-            (self.N.T @ rate * self.V(t))
-            + (self.Win @ self.uin(t))
-            - (self.uout(t) * y / m)
-        )
+        
+
+
+        dydt = self.N.T @ rate * self.V(t)
+
+        if self.reactor_mode in ("semi-batch", "cstr"):
+            dydt += self.Win @ self.uin(t)
+
+        if self.reactor_mode == "cstr":
+            m = np.sum(self.Mw @ y)
+            dydt -= self.uout(t) * y / m
+
         return dydt
+
 
     def run_simulation(self, time, alpha=0):
         """
@@ -143,13 +141,26 @@ class Simulate(DataTools):
 
         self._reaction_rate = self._reaction_rate.T
 
-        q0T, S0T, M0T, Q0T = compute_matrices(self.N, self.Win, self.n0)
+        q0T, S0T, M0T, Q0T = compute_matrices(
+    self.N, self.Win, self.n0, reactor_mode=self.reactor_mode
+)
+
 
         self._xr = self._sol @ S0T.T
 
-        self._xin = self._sol @ M0T.T
+        if self.reactor_mode == "batch":
+            self._xin = None
+            self._lamda = None
 
-        self._lamda = self._sol @ q0T.T
+        elif self.reactor_mode == "semi-batch":
+            self._xin = self._sol @ M0T.T
+            self._lamda = None
+
+        elif self.reactor_mode == "cstr":
+            self._xin = self._sol @ M0T.T
+            self._lamda = self._sol @ q0T.T
+
+
 
         d = {
             "moles": self._sol,
@@ -157,7 +168,9 @@ class Simulate(DataTools):
             "flow_rate": self._flow_rate,
             "xr": self._xr,
             "xin": self._xin,
-            "xout": 1 - self._lamda,
+            "xout": None if self.reactor_mode in ("batch", "semi-batch") else 1 - self._lamda,
+
+
         }
 
         return d

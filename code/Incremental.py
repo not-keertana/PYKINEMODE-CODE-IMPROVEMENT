@@ -14,7 +14,6 @@ from extents import compute_matrices, compute_inlet_extents
 import heapq
 import itertools
 from simulate import Simulate
-from scipy.stats import norm
 
 # from scipy.integrate import ode
 
@@ -166,8 +165,7 @@ class Incremental(Simulate, DataTools):
 
             conc = self.c(self.time).T
             n_param = num_params(ratelaw, conc)
-            
-            x0=np.random.rand(n_param)
+            x0 = np.random.rand(n_param)
             bnds = []
             for i in range(n_param):
                 bnds.append((0, None))
@@ -268,35 +266,6 @@ class Incremental(Simulate, DataTools):
         dxdt = ratelaw(self.c(t), K) * self.V(t) - (self.uout(t)[0] / mass) * x
         return dxdt
 
-    # def eb_extent_rate_derivative(self, t, x, K, ratelaw):
-    #     '''
-    #     this is to compute the derivate of computed extents.
-    #     Solving this, we can numerically find
-    #     extent value for a particular ratelaw
-    #     '''
-    #     mass = np.sum(self.n(t) @ self.Mw)
-    #     dxdt = ratelaw(self.c(t), K) * self.V(t) - (self.uout(t)[0]/mass) * x
-    #     return dxdt
-
-    # def eb_objective_function(self, K, reaction_extent, ratelaw, time):
-    #     x0 = 0
-    #     fun = partial(self.eb_extent_rate_derivative, K = K, ratelaw = ratelaw)
-    #     solver = ode(fun).set_integrator("dop853")
-    #     solver.set_initial_value(x0)
-    #     k = 0
-    #     soln = [x0]
-    #     while solver.successful() and solver.t < time[-1]:
-    #         k += 1
-    #         solver.integrate(time[k])
-    #         soln.append(solver.y)
-
-    #     # Convert the list to a numpy array.
-    #     computed_extent = np.array(soln,dtype=object)
-    #     # computed_extent = odeint(self.eb_extent_rate_derivative, 0, time, args = (K, ratelaw))
-    #     computed_extent  = np.squeeze(computed_extent)
-    #     loss = np.sqrt(mean_squared_error(reaction_extent, computed_extent))
-    #     return loss
-
     def eb_objective_function(self, K, reaction_extent, ratelaw, time):
         """
         Computes the objective function for parameter estimation based on extent-based modeling.
@@ -353,8 +322,7 @@ class Incremental(Simulate, DataTools):
 
             conc = self.c(self.time).T
             n_param = num_params(ratelaw, conc)
-            
-            x0=np.random.rand(n_param)
+            x0 = np.random.rand(n_param)
             bnds = []
             for i in range(n_param):
                 bnds.append((0, None))
@@ -555,50 +523,10 @@ class Incremental(Simulate, DataTools):
             for i in range(bootstraps)
         )
 
-        #CI = np.percentile(optims, [100 * (1 - confidence) / 2, 100 * (1 - (1 - confidence) / 2)])
-        optims = np.array(optims)   # shape = (bootstraps, n_param)
-
-        CI = np.percentile(optims,[100 * (1 - confidence) / 2, 100 * (1 - (1 - confidence) / 2)],axis=0)
-
+        CI = np.percentile(
+            optims, [100 * (1 - confidence) / 2, 100 * (1 - (1 - confidence) / 2)]
+        )
         return CI
-    
-    def conf_int_stoich_extents(
-        self,
-        reaction_extents: np.ndarray,
-        candidates_list,
-        confidence,
-        bootstraps,
-        n_jobs,
-        solver: str,
-    ) -> np.ndarray:
-        """
-        Compute a bootstrap CI for each reaction (column) in a user-supplied
-        reaction_extents matrix, using conf_int_extent_based under the hood.
-
-        Args:
-            reaction_extents: 2D array, shape (n_timepoints, n_reactions).
-            candidates_list: list of length n_reactions, each a RateLaw or function.
-            confidence, bootstraps, n_jobs, solver: passed to conf_int_extent_based.
-
-        Returns:
-            cis: array of shape (2, n_reactions), where
-                 cis[0, i] = lower bound for reaction i,
-                 cis[1, i] = upper bound for reaction i.
-        """
-        n_reactions = reaction_extents.shape[1]
-        cis = np.zeros((2, n_reactions))
-        for i in range(n_reactions):
-            ci_i = self.conf_int_extent_based(
-                reaction_extents[:, i],
-                candidates_list[i],
-                confidence,
-                bootstraps,
-                n_jobs,
-                solver
-            )
-            # conf_int_extent_based returns a (2,) vector for that single reaction
-            cis[:, i] = ci_i
-        return cis
 
     def interpret_results(
         self, results: list[list], candidates_list, metric, plot=True, top_k=1
@@ -710,7 +638,6 @@ class Incremental(Simulate, DataTools):
         bootstraps=1000,
         plot=True,
         solver="Nelder-Mead",
-        stoich_extents=None
     ):
         """
         Estimates the parameters of the reaction kinetics based on the specified method.
@@ -830,8 +757,6 @@ class Incremental(Simulate, DataTools):
                 c = (n.T / self.V(self.time)).T
                 self.add_concentration_data(c, self.time)
 
-            
-
             for i in range(len(candidates_list)):
                 print(f"Processing Reaction {i+1}:")
                 candidates = candidates_list[i]
@@ -859,49 +784,6 @@ class Incremental(Simulate, DataTools):
                 if conf_int:
                     ci = self.conf_int_extent_based(
                         reaction_extents[:, i],
-                        best_candidate,
-                        confidence,
-                        bootstraps,
-                        n_jobs,
-                        solver,
-                    )
-                    print(f"Confidence Interval {ci}")
-                    best_result["conf_ints"].append(ci)
-                print()
-            best_result["results"] = results
-
-
-        elif method == "stoich_extent_based":
-            results = []
-            
-            for i in range(len(candidates_list)):
-                print(f"Processing Reaction {i+1}:")
-                candidates = candidates_list[i]
-                #print(stoich_extents)
-                results.append(
-                    self.eb_est_params(stoich_extents[:, i], candidates, solver)
-                )
-
-            best_idxs = self.interpret_results(
-                results, candidates_list, metric, plot, top_k=1
-            )
-
-            for i in range(len(candidates_list)):
-                r_strings = [
-                    candidate.expression
-                    if isinstance(candidate, RateLaw)
-                    else candidate.__str__()[10:-19]
-                    for candidate in candidates_list[i]
-                ]  # creates ratelaw name strings
-                print(f"Reaction {i+1}: ")
-                print(f"Best Rate Law: {r_strings[best_idxs[i][0]]}")
-                print(f"Estimated Parameters: {results[i][best_idxs[i][0]].x}")
-                best_candidate = candidates_list[i][best_idxs[i][0]]
-                best_result["best_ratelaws"].append(best_candidate)
-                best_result["params"].append(results[i][best_idxs[i][0]].x)
-                if conf_int:
-                    ci = self.conf_int_extent_based(
-                        stoich_extents[:, i],
                         best_candidate,
                         confidence,
                         bootstraps,
@@ -1111,96 +993,3 @@ class Incremental(Simulate, DataTools):
             plt.legend()
             plt.show()
         return results_normal
-    
-
-    def conf_int_finetune(self, cand_list, guess, num_params, solver="Nelder-Mead",confidence=0.95, bootstraps=500, n_jobs=-1):
-        conc = self.c(self.time)
-        n_param_total = sum(num_params)
-
-        optims = Parallel(n_jobs=n_jobs)(
-        delayed(self.ft_ci_parallelise)(cand_list, guess, num_params, solver)
-        for _ in range(bootstraps))
-        optims = np.array(optims).reshape(bootstraps, n_param_total)
-
-        CI = np.percentile(
-        optims,
-        [100 * (1 - confidence) / 2, 100 * (1 - (1 - confidence) / 2)],
-        axis=0,)
-
-        plot_bootstrap = True  # set False to disable plotting automatically
-
-        if plot_bootstrap:
-            n_param = optims.shape[1]
-            fig, axes = plt.subplots(n_param, 1, figsize=(6, 3 * n_param))
-
-    # ensure axes is iterable
-            if n_param == 1:
-                axes = [axes]
-
-            for idx, ax in enumerate(axes):
-        # extract bootstrap samples for this parameter
-                samples = optims[:, idx]
-
-        # plot histogram
-                ax.hist(samples, bins=30, alpha=0.7, edgecolor='black')
-
-        # CI and median lines
-                ax.axvline(CI[0, idx], color='r', linestyle='--', label='Lower CI')
-                ax.axvline(CI[1, idx], color='r', linestyle='--', label='Upper CI')
-                ax.axvline(np.median(samples), color='k', label='Median')
-
-        # labels and formatting
-                ax.set_title(f'Bootstrap Distribution — Parameter {idx+1}')
-                ax.set_xlabel('Estimated Value')
-                ax.set_ylabel('Frequency')
-                ax.legend()
-
-            plt.tight_layout()
-            plt.show()
-
-
-
-
-        return CI
-
-    def ft_ci_parallelise(self, cand_list, guess, num_params, solver):
-        idx = np.random.choice(self.time.shape[0], self.time.shape[0], replace=True)
-        idx.sort()
-        if idx[0] != 0:
-            idx = np.insert(idx[:-1], 0, 0)
-
-        bs_time = self.time[idx]
-        bs_conc = self.c(self.time)[idx]
-
-        optim = sc.optimize.minimize(
-        self.ft_objective_function,
-        guess,
-        args=(bs_conc, cand_list, num_params),
-        method=solver,
-        bounds=[(0, None)] * len(guess),)
-        return optim.x
-    
-    def finetune_with_ci(self, *args, confidence=0.95, bootstraps=500, n_jobs=-1, **kwargs):
-        """
-        Wrapper around finetune that also computes 95% confidence intervals.
-        """
-        best_result = self.finetune(*args, **kwargs)
-
-    # Prepare CI inputs
-        cand_list = best_result["best_ratelaws"]
-        guess = np.concatenate(best_result["params"])
-        num_params = [len(p) for p in best_result["params"]]
-
-    # Compute CI
-        CI = self.conf_int_finetune(
-        cand_list, guess, num_params,
-        solver=kwargs.get("solver", "Nelder-Mead"),
-        confidence=confidence,
-        bootstraps=bootstraps,
-        n_jobs=n_jobs)
-
-    # Store and print
-        best_result["conf_ints"] = CI
-        print(f"\n{int(confidence*100)}% Confidence Intervals:\n{CI}")
-        return best_result
-

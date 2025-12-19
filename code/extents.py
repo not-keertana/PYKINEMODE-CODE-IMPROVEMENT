@@ -2,123 +2,154 @@ import numpy as np
 from scipy.integrate import ode
 
 
-def compute_matrices(N, Win, n0):
-    """
-    Compute matrices S0, q0, M0, Q0T to compute physically interpretable extents
+def compute_matrices(N, Win, n0, reactor_mode="cstr"):
 
-    Args:
-        N (array-like): The stoichiometric matrix.
-        Win (array-like): The input stoichiometric matrix.
-        n0 (array-like): The initial concentration data.
-
-    Returns:
-        tuple: A tuple containing the matrices q0T, S0T, M0T, Q0T.
-
-    Raises:
-        ValueError: If the rank of the [N.T Win] matrix is not equal to numReactions + numInlet.
-
-    """
-    if len(n0.shape) == 1:
-        n0 = np.reshape(n0, (n0.shape[0], 1))
+    if n0.ndim == 1:
+        n0 = n0.reshape(-1, 1)
 
     numReactions = N.shape[0]
     numSpecies = N.shape[1]
+
+    # ---------- BATCH ----------
+    if reactor_mode == "batch":
+        S0T = np.linalg.pinv(N.T)
+        return (
+            np.zeros((0, numSpecies)),  # q0T
+            S0T,
+            np.zeros((0, numSpecies)),  # M0T
+            np.zeros((0, numSpecies)),  # Q0T
+        )
+
+    # ---------- SEMI-BATCH / CSTR ----------
     numInlet = Win.shape[1]
 
     mat = np.concatenate([N.T, Win], axis=1)
+    if np.linalg.matrix_rank(mat) != numReactions + numInlet:
+        raise ValueError("Rank error in [N.T Win]")
 
-    if np.linalg.matrix_rank(mat) == numReactions + numInlet:
-        U1, S1, V1T = np.linalg.svd(mat)
-        Q = U1[:, numReactions + numInlet:]
-        mat2 = np.concatenate([N.T, Q], axis=1)
-        U2, S2, V2T = np.linalg.svd(mat2)
-        L = U2[:, numSpecies - numInlet:]
-        M = L @ np.linalg.pinv(Win.T @ L)
-        ST = np.linalg.pinv(N.T) @ (np.identity(numSpecies) - (Win @ M.T))
+    U1, _, _ = np.linalg.svd(mat)
+    Q = U1[:, numReactions + numInlet:]
 
-        q0T = (np.ones((numSpecies - numReactions - numInlet, 1)).T @ Q.T) / (
-            np.ones((numSpecies - numReactions - numInlet, 1)).T @ Q.T @ n0
+    mat2 = np.concatenate([N.T, Q], axis=1)
+    U2, _, _ = np.linalg.svd(mat2)
+    L = U2[:, numSpecies - numInlet:]
+
+    M = L @ np.linalg.pinv(Win.T @ L)
+    ST = np.linalg.pinv(N.T) @ (np.eye(numSpecies) - Win @ M.T)
+
+    # ---------- SEMI-BATCH ----------
+    if reactor_mode == "semi-batch":
+        return (
+            np.zeros((0, numSpecies)),  # q0T
+            ST,
+            M.T,
+            np.zeros((0, numSpecies)),  # Q0T
         )
-        S0T = ST @ (np.identity(numSpecies) - n0 @ q0T)
-        M0T = M.T @ (np.identity(numSpecies) - n0 @ q0T)
-        Q0T = Q.T @ (np.identity(numSpecies) - n0 @ q0T)
 
-    else:
-        raise ValueError(
-            "Rank Error. Rank of [N.T Win] matrix != numReactions + numInlet."
-        )
+    # ---------- CSTR ONLY ----------
+    q0T = (
+        np.ones((Q.shape[1], 1)).T @ Q.T
+    ) / (
+        np.ones((Q.shape[1], 1)).T @ Q.T @ n0
+    )
+
+    S0T = ST @ (np.eye(numSpecies) - n0 @ q0T)
+    M0T = M.T @ (np.eye(numSpecies) - n0 @ q0T)
+    Q0T = Q.T @ (np.eye(numSpecies) - n0 @ q0T)
 
     return q0T, S0T, M0T, Q0T
 
 
-def extents_derivative_v2(t, y, uin, uout):
+
+
+
+def extents_derivative_v2(t, y, uin, uout, reactor_mode):
     """
-    Derivative function for xin, lamda, and mass with respect to time
-
-    Args:
-        t (float): The current time.
-        y (array-like): The current state vector.
-        uin (function): The input concentration function.
-        uout (function): The output concentration function.
-
-    Returns:
-        array-like: The derivative of the state vector with respect to time.
-
+    State vectors:
+    batch:      y = [m]
+    semi-batch: y = [m, *xin]
+    cstr:       y = [m, lamda, *xin]
     """
-    m, lamda = y[0], y[1]
-    xin = np.array(y[2:])
-    dm_dt = np.sum(uin(t)) - uout(t)[0]
-    dl_dt = -(uout(t)[0] / m) * lamda
-    dxin_dt = uin(t) - (uout(t)[0] / m) * xin
-    dxin_dt = list(dxin_dt)
-    dydt = [dm_dt, dl_dt]
-    dydt.extend(dxin_dt)
-    return dydt
+
+    if reactor_mode == "batch":
+        return [0.0]
+
+    elif reactor_mode == "semi-batch":
+        m = y[0]
+        xin = np.array(y[1:])
+
+        u = uin(t)
+        dm_dt = np.sum(u)
+        dxin_dt = u
+
+        return [dm_dt, *dxin_dt.tolist()]
+
+    elif reactor_mode == "cstr":
+        m = y[0]
+        lamda = y[1]
+        xin = np.array(y[2:])
+
+        u = uin(t)
+        vout = uout(t)[0]
+
+        dm_dt = np.sum(u) - vout
+        dl_dt = -(vout / m) * lamda
+        dxin_dt = u - (vout / m) * xin
+
+        return [dm_dt, dl_dt, *dxin_dt.tolist()]
+
+    else:
+        raise ValueError("Unknown reactor mode")
 
 
-def compute_inlet_extents(uin, uout, time, n0, Mw):
-    """
-    Returns xin, lamda, m
-    Computes xin, lamda and m given uin, uout, time, n0, and Mw data
 
-    Uses the algorithm proposed in V2 (Incremental identification. Nirav et al. paper)
 
-    Args:
-        uin (function): The input concentration function.
-        uout (function): The output concentration function.
-        time (array-like): The time points for the simulation.
-        n0 (array-like): The initial concentration data.
-        Mw (array-like): The molecular weight data.
+def compute_inlet_extents(uin, uout, time, n0, Mw, reactor_mode="cstr"):
 
-    Returns:
-        tuple: A tuple containing the vectors xin, lamda, and m.
-
-    """
-    p = uin(0).shape[0]
     m0 = np.sum(n0 @ Mw)
-    t0 = 0.0
-    y0 = [m0, 1]
-    y0.extend([0] * p)
+    t0 = time[0]
+
+    if reactor_mode == "batch":
+        y0 = [m0]
+        sol_dim = 1
+
+    elif reactor_mode == "semi-batch":
+        p = uin(0).shape[0]
+        y0 = [m0] + [0.0] * p
+        sol_dim = p + 1
+
+    else:  # cstr
+        p = uin(0).shape[0]
+        y0 = [m0, 1.0] + [0.0] * p
+        sol_dim = p + 2
 
     solver = ode(extents_derivative_v2)
     solver.set_integrator("dop853")
-    solver.set_f_params(uin, uout)
+    solver.set_f_params(uin, uout, reactor_mode)
     solver.set_initial_value(y0, t0)
 
-    N_ = time.shape[0]
-    t1 = time[-1]
-
-    sol = np.empty((N_, p + 2))
+    sol = np.zeros((len(time), sol_dim))
     sol[0] = y0
 
     k = 1
-    while solver.successful() and solver.t < t1:
+    while solver.successful() and k < len(time):
         solver.integrate(time[k])
         sol[k] = solver.y
         k += 1
 
     m = sol[:, 0]
-    lamda = sol[:, 1]
-    lamda = np.reshape(lamda, (lamda.shape[0], 1))
-    xin = sol[:, 2:]
-    return xin, lamda, m
+
+    if reactor_mode == "batch":
+        return None, None, m
+
+    elif reactor_mode == "semi-batch":
+        xin = sol[:, 1:]
+        return xin, None, m
+
+    else:
+        lamda = sol[:, 1].reshape(-1, 1)
+        xin = sol[:, 2:]
+        return xin, lamda, m
+
+
+    
